@@ -369,6 +369,14 @@ const EASY_NEG = "score_4, score_5, score_6, blurry, lowres, bad anatomy, extra 
 const EASY_STEPS = 25;
 const EASY_SIZES = { tall: [832, 1216], wide: [1216, 832] };
 
+function easyHelp() {
+	return "Just type what you want to see, e.g. a diver over a coral reef with clownfish. The picture comes back in about a minute.\n" +
+		"/again: same idea, new variation.\n" +
+		"/wide or /tall: landscape or portrait for the next pictures (portrait is the default).\n" +
+		"/stop: cancel the picture that is being made.\n" +
+		"Power commands (/wf, /s, /q) still work; /c lists them.";
+}
+
 function easyState(user) {
 	if (!CONFIG.EASY[user]) CONFIG.EASY[user] = { last: null, width: EASY_SIZES.tall[0], height: EASY_SIZES.tall[1], busy: false };
 	return CONFIG.EASY[user];
@@ -435,6 +443,14 @@ async function easyRender(message, idea) {
 	}
 }
 
+function easySetSize(message, which) {
+	const st = easyState(message.from.id + "");
+	[st.width, st.height] = EASY_SIZES[which];
+	botTextMessagReply(message, which === "wide"
+		? "Wide (landscape) from now on. Type an idea, or /again."
+		: "Tall (portrait) from now on. Type an idea, or /again.");
+}
+
 function setCommand(message, origin) {
 	if (!isAllowed(message)) return; // defence in depth: re-check the allowlist
 
@@ -445,14 +461,30 @@ function setCommand(message, origin) {
 		console.log("From:", (message.from.username || message.from.first_name || "User") ,"Command:", text, "Type:", origin)
 
 		let sliced = text.split(" ");
-		let command = sliced[0];
+		let command = sliced[0].replace(/@\w+$/, ""); // accept /cmd@botname
 
 		let user = message.from.id + "";
 
 		switch (command) {
 			case "/c":
-			case "/start":
 				botTextMessagReply(message, allCommands());
+				break;
+			// easy mode commands
+			case "/start":
+			case "/help":
+				botTextMessagReply(message, easyHelp());
+				break;
+			case "/again": {
+				const st = easyState(user);
+				if (!st.last) botTextMessagReply(message, "Nothing to repeat yet. Type an idea first.");
+				else easyRender(message, st.last);
+				break;
+			}
+			case "/wide":
+				easySetSize(message, "wide");
+				break;
+			case "/tall":
+				easySetSize(message, "tall");
 				break;
 			case "/wfs":
 				CONFIG.MODELS[user] = readModels(CONFIG.WORKFLOWS_DIRECTORY);
@@ -614,6 +646,7 @@ function setCommand(message, origin) {
 					console.log(error)
 				}
 				break;
+			case "/stop": // easy alias for /i
 			case "/i":
 				fetch(CONFIG.API_URL + "/interrupt", {
 					method: "POST",
@@ -646,6 +679,14 @@ if (CONFIG.TOKEN != "bot_token") {
 		console.log("[COMFY_TG]: Telegram bot is live!");
 		CONFIG.READY = true;
 		CONFIG.TG = new TelegramBot(CONFIG.TOKEN, { polling: true });
+		// short command menu for easy mode
+		CONFIG.TG.setMyCommands([
+			{ command: "help", description: "How to use: just type an idea" },
+			{ command: "again", description: "Same idea, new variation" },
+			{ command: "wide", description: "Landscape pictures (1216x832)" },
+			{ command: "tall", description: "Portrait pictures (832x1216, default)" },
+			{ command: "stop", description: "Cancel the picture being made" },
+		]).then(() => console.log("[COMFY_TG] command menu set")).catch((e) => console.log("[COMFY_TG] setMyCommands failed", e && e.message));
 		CONFIG.TG.on("photo", async (msg) => {
 			if (!isAllowed(msg)) return; // check before downloading anything
 			try {
