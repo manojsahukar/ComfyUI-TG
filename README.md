@@ -137,6 +137,47 @@ Now upload it in workflow section
 
 <br />
 
+# Easy mode
+
+Easy mode is on by default in this fork. Any plain text message (one that does not start with `/`) from an allowlisted user becomes the prompt. The bot then:
+
+- selects the easy-mode workflow (`EASY_WORKFLOW_INDEX`, default `0`) if no suitable workflow is selected,
+- prefixes the text with `EASY_PROMPT_PREFIX`, unless the text already starts with the prefix's first tag,
+- sets the negative prompt to `EASY_NEGATIVE`, picks a random seed and sets `EASY_STEPS` steps,
+- queues it, replies "Making it… about a minute." and sends the image back captioned with your idea.
+
+While a picture is being made, or anything else is queued in ComfyUI, new ideas get a "Still making the last picture" reply instead of being queued. The busy guard clears itself after 5 minutes.
+
+The easy-mode workflow must be in API format with node `3` as the positive `CLIPTextEncode`, node `4` as the negative `CLIPTextEncode`, node `5` as the `EmptyLatentImage` and node `6` as the `KSampler`.
+
+## Easy mode commands
+
+These are also registered as the bot's command menu (`setMyCommands`) at startup. Commands sent as `/cmd@yourbot` are accepted too.
+
+| Command | What it does |
+|---|---|
+| `/help` or `/start` | Short easy-mode help |
+| `/again` | Same idea, new seed |
+| `/wide` | Landscape (1216x832) for the next pictures |
+| `/tall` | Portrait (832x1216) for the next pictures, the default |
+| `/stop` | Cancel the current picture (same as `/i`) |
+
+`/c` still lists the full command set below, and `/wf`, `/s`, `/q` and the rest are unchanged. Orientation and the last idea are kept in memory and reset when the bot restarts.
+
+## Easy mode settings in `telegram.json`
+
+Every key is optional. When a key is missing, the default shown is used.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `EASY_MODE` | `true` | Set to `false` to turn easy mode off. Plain text is then ignored, the easy commands are not recognised, `/start` shows the classic command list and no command menu is registered. |
+| `EASY_WORKFLOW_INDEX` | `0` | Index (as listed by `/wfs`) of the workflow to use for easy mode |
+| `EASY_PROMPT_PREFIX` | `"score_9, score_8_up, score_7_up, "` | Text put in front of every idea. Use `""` for no prefix. |
+| `EASY_NEGATIVE` | `"score_4, score_5, score_6, blurry, lowres, bad anatomy, extra limbs, deformed hands, text, watermark, signature"` | Negative prompt |
+| `EASY_STEPS` | `25` | Sampler steps |
+
+The default prefix and negative are tuned for Pony-style SDXL models. Change them to suit your model.
+
 # Telegram Commands
 
 Writing **/c** or **/start** will also provide the list of all commands:

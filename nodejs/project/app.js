@@ -72,6 +72,28 @@ function addDirectories() {
 	CONFIG.API_URL = TG_CONFIG.COMFY_URL;
 	// Allowlist: only these Telegram user ids may use the bot (fail closed if empty or missing)
 	CONFIG.ALLOWED_USER_IDS = (TG_CONFIG.ALLOWED_USER_IDS || []).map(String);
+	CONFIG.EASY_SETTINGS = loadEasySettings(TG_CONFIG);
+}
+
+// Easy-mode settings from telegram.json; built-in defaults apply when a key is absent.
+// The default prefix and negative are tuned for Pony-style SDXL models.
+function loadEasySettings(cfg) {
+	cfg = cfg || {};
+	const has = (k) => Object.prototype.hasOwnProperty.call(cfg, k) && cfg[k] !== null;
+	const steps = parseInt(cfg.EASY_STEPS, 10);
+	const index = parseInt(cfg.EASY_WORKFLOW_INDEX, 10);
+	return {
+		enabled: !(cfg.EASY_MODE === false || String(cfg.EASY_MODE).toLowerCase() === "false"),
+		workflowIndex: Number.isInteger(index) && index >= 0 ? index : 0,
+		prefix: has("EASY_PROMPT_PREFIX") ? String(cfg.EASY_PROMPT_PREFIX) : "score_9, score_8_up, score_7_up, ",
+		negative: has("EASY_NEGATIVE") ? String(cfg.EASY_NEGATIVE) : "score_4, score_5, score_6, blurry, lowres, bad anatomy, extra limbs, deformed hands, text, watermark, signature",
+		steps: Number.isInteger(steps) && steps > 0 ? steps : 25,
+	};
+}
+
+function easySettings() {
+	if (!CONFIG.EASY_SETTINGS) CONFIG.EASY_SETTINGS = loadEasySettings(TG_CONFIG);
+	return CONFIG.EASY_SETTINGS;
 }
 
 // Silently drop anything not from an allowlisted user in a private chat
@@ -364,9 +386,7 @@ async function watch(message, data) {
 // Plain text (anything not starting with "/") is used as the prompt.
 // The easy-mode workflow must have nodes 3 (positive CLIPTextEncode), 4 (negative CLIPTextEncode),
 // 5 (EmptyLatentImage) and 6 (KSampler).
-const EASY_POS_PREFIX = "score_9, score_8_up, score_7_up, ";
-const EASY_NEG = "score_4, score_5, score_6, blurry, lowres, bad anatomy, extra limbs, deformed hands, text, watermark, signature";
-const EASY_STEPS = 25;
+// Prefix, negative, steps, workflow index and the on/off switch come from easySettings().
 const EASY_SIZES = { tall: [832, 1216], wide: [1216, 832] };
 
 function easyHelp() {
@@ -397,6 +417,7 @@ async function comfyBusy() {
 
 async function easyRender(message, idea) {
 	if (!isAllowed(message)) return; // allowlist in front of easy mode too
+	if (!easySettings().enabled) return;
 	const user = message.from.id + "";
 	const st = easyState(user);
 	idea = String(idea || "").trim();
@@ -412,19 +433,22 @@ async function easyRender(message, idea) {
 		// auto-select the easy-mode workflow if nothing usable is selected
 		if (!CONFIG.PROMPT.MODEL[user] || !easyHasNodes(CONFIG.PROMPT.NODES[user])) {
 			CONFIG.MODELS[user] = readModels(CONFIG.WORKFLOWS_DIRECTORY);
-			CONFIG.PROMPT.MODEL[user] = CONFIG.MODELS[user][0];
+			CONFIG.PROMPT.MODEL[user] = CONFIG.MODELS[user][easySettings().workflowIndex];
 			CONFIG.PROMPT.NODES[user] = readJSONFile(CONFIG.PROMPT.MODEL[user]);
 		}
 		const nodes = CONFIG.PROMPT.NODES[user];
 		if (!easyHasNodes(nodes)) throw new Error("easy-mode workflow does not have the expected node layout");
-		const pos = /^\s*score_9/i.test(idea) ? idea : EASY_POS_PREFIX + idea;
+		const es = easySettings();
+		// skip the prefix when the idea already starts with its first tag
+		const firstTag = es.prefix.split(",")[0].trim().toLowerCase();
+		const pos = (!firstTag || idea.toLowerCase().startsWith(firstTag)) ? idea : es.prefix + idea;
 		nodes["3"].inputs.text = pos;
-		nodes["4"].inputs.text = EASY_NEG;
+		nodes["4"].inputs.text = es.negative;
 		nodes["5"].inputs.width = st.width;
 		nodes["5"].inputs.height = st.height;
 		nodes["5"].inputs.batch_size = 1;
 		nodes["6"].inputs.seed = Math.floor(Math.random() * 1e15);
-		nodes["6"].inputs.steps = EASY_STEPS;
+		nodes["6"].inputs.steps = es.steps;
 		st.last = idea;
 		const r = await fetch(CONFIG.API_URL + "/prompt", {
 			method: "POST", headers: { "Content-Type": "application/json" },
@@ -464,6 +488,12 @@ function setCommand(message, origin) {
 		let command = sliced[0].replace(/@\w+$/, ""); // accept /cmd@botname
 
 		let user = message.from.id + "";
+
+		// EASY_MODE off: /start shows the classic command list and the easy commands are not recognised
+		if (!easySettings().enabled) {
+			if (command === "/start") command = "/c";
+			else if (["/help", "/again", "/wide", "/tall", "/stop"].includes(command)) command = "";
+		}
 
 		switch (command) {
 			case "/c":
@@ -658,7 +688,7 @@ function setCommand(message, origin) {
 				break;
 			default:
 				// plain text (no leading "/") is an easy-mode prompt
-				if (origin == "text" && !text.trim().startsWith("/")) {
+				if (easySettings().enabled && origin == "text" && !text.trim().startsWith("/")) {
 					easyRender(message, text);
 					break;
 				}
@@ -680,7 +710,7 @@ if (CONFIG.TOKEN != "bot_token") {
 		CONFIG.READY = true;
 		CONFIG.TG = new TelegramBot(CONFIG.TOKEN, { polling: true });
 		// short command menu for easy mode
-		CONFIG.TG.setMyCommands([
+		if (easySettings().enabled) CONFIG.TG.setMyCommands([
 			{ command: "help", description: "How to use: just type an idea" },
 			{ command: "again", description: "Same idea, new variation" },
 			{ command: "wide", description: "Landscape pictures (1216x832)" },
