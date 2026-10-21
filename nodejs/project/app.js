@@ -647,7 +647,7 @@ let ON = true;
 if (ON) {
 	createDirectories(CONFIG);
 
-	CONFIG.EXPRESS.listen(CONFIG.PORT, () => {
+	CONFIG.EXPRESS.listen(CONFIG.PORT, "127.0.0.1", () => { // dashboard is reachable from localhost only
 		console.log(`Server running at http://localhost:${CONFIG.PORT}`);
 	});
 }
