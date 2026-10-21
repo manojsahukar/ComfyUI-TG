@@ -585,7 +585,7 @@ CONFIG.EXPRESS.get("/ready", (req, res) => {
 CONFIG.EXPRESS.post("/workflows", async (req, res) => {
 	try {
 		const data = req.body;
-		const filename = data.name;
+		const filename = path.basename(String(data.name)); // strip directories to prevent path traversal
 		const filePath = path.join(CONFIG.WORKFLOWS_DIRECTORY, filename);
 		await fsp.mkdir(CONFIG.WORKFLOWS_DIRECTORY, { recursive: true });
 		await fsp.writeFile(filePath, JSON.stringify(data.data, null, 2), "utf8");
@@ -625,7 +625,7 @@ CONFIG.EXPRESS.get("/workflows", async (req, res) => {
 CONFIG.EXPRESS.delete("/workflows/:name", async (req, res) => {
 	try {
 		const { name } = req.params;
-		const filePath = path.join(CONFIG.WORKFLOWS_DIRECTORY, name + ".json");
+		const filePath = path.join(CONFIG.WORKFLOWS_DIRECTORY, path.basename(String(name)) + ".json"); // prevent path traversal
 		await fsp.unlink(filePath);
 		res
 			.status(200)
