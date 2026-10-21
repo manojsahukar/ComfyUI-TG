@@ -69,6 +69,19 @@ function addDirectories() {
 	TG_CONFIG = readJsonFile(path.join(CONFIG.MAIN_DIRECTORY, "telegram.json"));
 	CONFIG.TOKEN = TG_CONFIG.BOT_TOKEN;
 	CONFIG.API_URL = TG_CONFIG.COMFY_URL;
+	// Allowlist: only these Telegram user ids may use the bot (fail closed if empty or missing)
+	CONFIG.ALLOWED_USER_IDS = (TG_CONFIG.ALLOWED_USER_IDS || []).map(String);
+}
+
+// Silently drop anything not from an allowlisted user in a private chat
+function isAllowed(msg) {
+	try {
+		const ok = !!(msg && msg.from && msg.chat && msg.chat.type === "private" &&
+			(CONFIG.ALLOWED_USER_IDS || []).includes(String(msg.from.id)) &&
+			String(msg.chat.id) === String(msg.from.id));
+		if (!ok) console.log("[COMFY_TG] dropped update from id", msg && msg.from && msg.from.id, "chat type", msg && msg.chat && msg.chat.type);
+		return ok;
+	} catch (e) { return false; }
 }
 
 args.forEach((arg) => {
@@ -331,6 +344,7 @@ async function watch(message, data) {
 }
 
 function setCommand(message, origin) {
+	if (!isAllowed(message)) return; // defence in depth: re-check the allowlist
 
 	try {
 
@@ -536,6 +550,7 @@ if (CONFIG.TOKEN != "bot_token") {
 		CONFIG.READY = true;
 		CONFIG.TG = new TelegramBot(CONFIG.TOKEN, { polling: true });
 		CONFIG.TG.on("photo", async (msg) => {
+			if (!isAllowed(msg)) return; // check before downloading anything
 			try {
 				if (msg.photo && msg.photo.length > 0) {
 					let photoId = msg.photo[msg.photo.length - 1].file_id
@@ -550,6 +565,7 @@ if (CONFIG.TOKEN != "bot_token") {
 			}
 		});
 		CONFIG.TG.on("text", (msg) => {
+			if (!isAllowed(msg)) return;
 			setCommand(msg, "text");
 		});
 	} catch (error) {
