@@ -303,8 +303,13 @@ function editJSON(number, inputName, inputValue, data) {
 async function sendResultToUser(message, images) {
 	if (images.length > 0) {
 		images.forEach(async (image) => {
-			let file_path = path.join(image.subfolder, image.filename);
-			botMediaMessage(message, "Here is your image", file_path);
+			// Fetch the image over the local ComfyUI API instead of reading the filesystem
+			try {
+				const q = new URLSearchParams({ filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" });
+				const r = await fetch(`${CONFIG.API_URL}/view?${q}`);
+				const buf = Buffer.from(await r.arrayBuffer());
+				await CONFIG.TG.sendPhoto(message.chat.id, buf, { caption: "Here is your image", reply_parameters: { message_id: message.message_id } }, { filename: image.filename, contentType: "image/png" });
+			} catch (e) { console.log("[COMFY_TG] send image failed", e && e.message); }
 		});
 	}
 }
@@ -328,8 +333,14 @@ async function watch(message, data) {
 			let status = res[id].status;
 			if (status.completed && status.status_str === "success") {
 				let nodeid = getNodeID(CONFIG.PROMPT.NODES[user], "TG_ImageSaver");
+				// Fall back to the first stock SaveImage node when no TG_ImageSaver is present
+				if (nodeid == -1) {
+					for (const k in CONFIG.PROMPT.NODES[user]) {
+						if (CONFIG.PROMPT.NODES[user][k].class_type === "SaveImage") { nodeid = k; break; }
+					}
+				}
 				if (nodeid != -1) {
-					let images = res[id].outputs[nodeid].images || [];
+					let images = (res[id].outputs[nodeid] || {}).images || [];
 					sendResultToUser(message, images);
 				}
 			} else {
