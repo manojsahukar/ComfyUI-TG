@@ -26,6 +26,7 @@ let CONFIG = {
 		NODES: {},
 	},
 	WATCHER: {},
+	EASY: {}, // easy mode state per user: { last, width, height, busy }
 };
 
 const deleteContentsInsideDirectory = async (dirPath) => {
@@ -127,9 +128,9 @@ function botMediaMessage(message, caption, path) {
 }
 
 function botTextMessagReply(message, text) {
-	CONFIG.TG.sendMessage(message.chat.id, text, {
+	CONFIG.TG.sendMessage(message.chat.id, text, message.message_id ? {
 		reply_parameters: { message_id: message.message_id },
-	});
+	} : {});
 }
 
 function allCommands() {
@@ -308,7 +309,10 @@ async function sendResultToUser(message, images) {
 				const q = new URLSearchParams({ filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" });
 				const r = await fetch(`${CONFIG.API_URL}/view?${q}`);
 				const buf = Buffer.from(await r.arrayBuffer());
-				await CONFIG.TG.sendPhoto(message.chat.id, buf, { caption: "Here is your image", reply_parameters: { message_id: message.message_id } }, { filename: image.filename, contentType: "image/png" });
+				const opts = { caption: message._caption || "Here is your image" }; // easy mode captions the image with the idea
+				if (message.message_id) opts.reply_parameters = { message_id: message.message_id };
+				await CONFIG.TG.sendPhoto(message.chat.id, buf, opts, { filename: image.filename, contentType: "image/png" });
+				console.log("[COMFY_TG] image sent", image.filename);
 			} catch (e) { console.log("[COMFY_TG] send image failed", e && e.message); }
 		});
 	}
@@ -330,6 +334,7 @@ async function watch(message, data) {
 		);
 
 		if (res && res[id]) {
+			if (message._done) message._done(); // easy mode: render finished, release the busy guard
 			let status = res[id].status;
 			if (status.completed && status.status_str === "success") {
 				let nodeid = getNodeID(CONFIG.PROMPT.NODES[user], "TG_ImageSaver");
@@ -350,7 +355,83 @@ async function watch(message, data) {
 			setTimeout(watch, 1000, message, data);
 		}
 	} catch (error) {
+		if (message._done) message._done();
 		botTextMessagReply(message, "Workflow failed/interrupted to generate result. Please try again!");
+	}
+}
+
+// ================================== EASY MODE =====================================
+// Plain text (anything not starting with "/") is used as the prompt.
+// The easy-mode workflow must have nodes 3 (positive CLIPTextEncode), 4 (negative CLIPTextEncode),
+// 5 (EmptyLatentImage) and 6 (KSampler).
+const EASY_POS_PREFIX = "score_9, score_8_up, score_7_up, ";
+const EASY_NEG = "score_4, score_5, score_6, blurry, lowres, bad anatomy, extra limbs, deformed hands, text, watermark, signature";
+const EASY_STEPS = 25;
+const EASY_SIZES = { tall: [832, 1216], wide: [1216, 832] };
+
+function easyState(user) {
+	if (!CONFIG.EASY[user]) CONFIG.EASY[user] = { last: null, width: EASY_SIZES.tall[0], height: EASY_SIZES.tall[1], busy: false };
+	return CONFIG.EASY[user];
+}
+
+function easyHasNodes(nodes) {
+	return !!(nodes && nodes["3"] && nodes["4"] && nodes["5"] && nodes["6"] &&
+		nodes["3"].class_type === "CLIPTextEncode" && nodes["4"].class_type === "CLIPTextEncode" &&
+		nodes["5"].class_type === "EmptyLatentImage" && nodes["6"].class_type === "KSampler");
+}
+
+async function comfyBusy() {
+	try {
+		const q = await fetch(CONFIG.API_URL + "/queue").then((r) => r.json());
+		return ((q.queue_running || []).length + (q.queue_pending || []).length) > 0;
+	} catch (e) { return false; }
+}
+
+async function easyRender(message, idea) {
+	if (!isAllowed(message)) return; // allowlist in front of easy mode too
+	const user = message.from.id + "";
+	const st = easyState(user);
+	idea = String(idea || "").trim();
+	if (!idea) { botTextMessagReply(message, "Type an idea first, e.g. a turtle swimming over a reef."); return; }
+	if (st.busy || await comfyBusy()) {
+		botTextMessagReply(message, "Still making the last picture. Wait for it to land, or send /stop to cancel it.");
+		return;
+	}
+	st.busy = true;
+	const release = () => { st.busy = false; clearTimeout(st.timer); };
+	st.timer = setTimeout(release, 5 * 60 * 1000); // safety: never stay stuck
+	try {
+		// auto-select the easy-mode workflow if nothing usable is selected
+		if (!CONFIG.PROMPT.MODEL[user] || !easyHasNodes(CONFIG.PROMPT.NODES[user])) {
+			CONFIG.MODELS[user] = readModels(CONFIG.WORKFLOWS_DIRECTORY);
+			CONFIG.PROMPT.MODEL[user] = CONFIG.MODELS[user][0];
+			CONFIG.PROMPT.NODES[user] = readJSONFile(CONFIG.PROMPT.MODEL[user]);
+		}
+		const nodes = CONFIG.PROMPT.NODES[user];
+		if (!easyHasNodes(nodes)) throw new Error("easy-mode workflow does not have the expected node layout");
+		const pos = /^\s*score_9/i.test(idea) ? idea : EASY_POS_PREFIX + idea;
+		nodes["3"].inputs.text = pos;
+		nodes["4"].inputs.text = EASY_NEG;
+		nodes["5"].inputs.width = st.width;
+		nodes["5"].inputs.height = st.height;
+		nodes["5"].inputs.batch_size = 1;
+		nodes["6"].inputs.seed = Math.floor(Math.random() * 1e15);
+		nodes["6"].inputs.steps = EASY_STEPS;
+		st.last = idea;
+		const r = await fetch(CONFIG.API_URL + "/prompt", {
+			method: "POST", headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ prompt: nodes }),
+		});
+		const data = await r.json();
+		if (!data || !data.prompt_id) throw new Error("ComfyUI did not accept the prompt: " + JSON.stringify(data).slice(0, 300));
+		botTextMessagReply(message, "Making it\u2026 about a minute.");
+		if (!message._caption) message._caption = idea.length > 900 ? idea.slice(0, 900) + "\u2026" : idea;
+		message._done = release;
+		watch(message, data);
+	} catch (e) {
+		release();
+		console.log("[COMFY_TG] easy render failed", e && e.message);
+		botTextMessagReply(message, "Sorry, that one failed to start. Try again in a moment.");
 	}
 }
 
@@ -543,7 +624,12 @@ function setCommand(message, origin) {
 					.catch((error) => console.error("Error:", error));
 				break;
 			default:
-				if (mode == 2) {
+				// plain text (no leading "/") is an easy-mode prompt
+				if (origin == "text" && !text.trim().startsWith("/")) {
+					easyRender(message, text);
+					break;
+				}
+				if (typeof mode !== "undefined" && mode == 2) {
 					botTextMessagReply(message, `Invalid command. Message /c`);
 				}
 				break;
